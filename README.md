@@ -27,7 +27,7 @@ mysniffer.py [-i interface] [-r tracefile] [expression]
 
 -r tracefile: Allows reading from a tcpdump format trace file for offline analysis.
 
-\<expression\>: An optional BPF filter to narrow down the traffic for monitoring.
+-f filter: An optional BPF filter to narrow down the traffic for monitoring.
 
 # Features
 
