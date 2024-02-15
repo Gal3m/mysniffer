@@ -1,4 +1,5 @@
 import scapy.layers.tls.record_tls13
+from mitmproxy.io.proto.http_pb2 import TLSExtension
 from scapy.all import sniff, Raw
 from scapy.layers.inet import *
 from scapy.layers.http import HTTPRequest
@@ -8,7 +9,7 @@ from scapy.layers.tls.handshake import TLSClientHello
 from datetime import datetime
 import argparse
 import re
-
+import ssl
 from scapy.main import load_layer
 
 
@@ -46,7 +47,8 @@ def http_nonstandard(packet):
             path = re.search(r"(GET|POST) ([^\s]+)", payload, re.MULTILINE)
 
             # Format timestamp
-            timestamp = datetime.fromtimestamp(packet.time).strftime('%Y-%m-%d %H:%M:%S.%f')
+            packet_time_float = float(packet.time)
+            timestamp = datetime.fromtimestamp(packet_time_float).strftime('%Y-%m-%d %H:%M:%S.%f')
 
             # Construct and print the formatted string
             formatted_output = (
@@ -84,16 +86,58 @@ def parse_tls(packet):
         return f"TLS v{tls_version}", decoded_serverName
     return None, None
 
+
+def remove_unprintable_prefix(sni_server_name):
+    # Convert the string to bytes
+    sni_bytes = sni_server_name.encode('utf-8')
+
+    # Find the index of the first printable character
+    first_printable = next((i for i, c in enumerate(sni_bytes) if c >= 0x20 and c <= 0x7E), None)
+
+    # If there are no printable characters, return an empty string
+    if first_printable is None:
+        return ''
+
+    # Decode the remaining bytes as a string
+    return sni_bytes[first_printable:].decode('utf-8')
+
 def get_server_name(raw_payload):
-    pattern = re.compile(b'\x00\x00..(\x00)..(.*?)$', re.DOTALL)
-    match = pattern.search(raw_payload)
-    if match:
-        server_name_length = match.group(1)
-        if server_name_length:
-            sni_length = int.from_bytes(server_name_length, byteorder='big')
-            server_name = match.group(2)[:sni_length]
-            return server_name.decode('utf-8', errors='ignore')
-    return "SNI not found"
+    try:
+        # Parse the packet as a TLS ClientHello
+        tls_header = raw_payload[0:5]
+        tls_version = tls_header[1:3]
+        tls_length = int.from_bytes(tls_header[3:5], byteorder='big')
+        tls_data = raw_payload[5:5 + tls_length]
+
+        # Check if the handshake is a ClientHello
+        if tls_data[0] != 0x01:
+            return False, None
+
+        # Extract the SNI extension
+        extensions_offset = 5 + 32 + 1 + 1 + 2 + 32
+        extensions_length = int.from_bytes(tls_data[extensions_offset:extensions_offset + 2], byteorder='big')
+        extensions_data = tls_data[extensions_offset + 2:extensions_offset + 2 + extensions_length]
+
+        # Search for the SNI extension type (0x00, 0x00)
+        sni_start = extensions_data.find(b'\x00\x00')
+        if sni_start == -1:
+            return False, None
+
+        # Extract the SNI extension length and data
+        sni_length = int.from_bytes(extensions_data[sni_start + 2:sni_start + 4], byteorder='big')
+        sni_data = extensions_data[sni_start + 4:sni_start + 4 + sni_length]
+
+        # Split the SNI data into type (0x00) and length fields
+        type_length = sni_data.find(b'\x00')
+        if type_length == -1:
+            return False, None
+
+        # Extract the SNI server name
+        sni_server_name = sni_data[type_length + 3:]
+        return remove_unprintable_prefix(sni_server_name.decode('utf-8'))
+    except Exception as e:
+
+        return None
 
 def get_tls_version(raw_payload):
     # Extract TLS version from the handshake layer
@@ -130,7 +174,8 @@ def packet_callback(packet):
     if not packet.haslayer(IP) or not packet.haslayer(TCP) :
         return
 
-    timestamp = datetime.fromtimestamp(packet.time).strftime('%Y-%m-%d %H:%M:%S.%f')
+    packet_time_float = float(packet.time)
+    timestamp = datetime.fromtimestamp(packet_time_float).strftime('%Y-%m-%d %H:%M:%S.%f')
     src_ip = packet[IP].src
     dst_ip = packet[IP].dst
     src_port = packet[TCP].sport
