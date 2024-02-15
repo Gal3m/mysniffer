@@ -1,6 +1,8 @@
+import scapy.layers.tls.record_tls13
 from scapy.all import sniff, Raw
 from scapy.layers.inet import *
 from scapy.layers.http import HTTPRequest
+from scapy.layers.tls.extensions import ServerName
 from scapy.layers.tls.handshake import TLSClientHello
 
 from datetime import datetime
@@ -67,25 +69,68 @@ def parse_http(packet):
 def parse_tls(packet):
     if packet.haslayer(TLSClientHello):
         tls_client_hello = packet[TLSClientHello]
-
+        tls_version = ''
+        decoded_serverName = ''
         # Extracting TLS version
-        tls_version = tls_client_hello.version
+        tls_versionCodes = tls_client_hello.version
+        versionCodes = [769, 770, 771, 772]
+        versions = ['1.0', '1.1', '1.2', '1.3']
+        if tls_versionCodes in versionCodes:
+            tls_version = versions[versionCodes.index(tls_versionCodes)]
 
-        # Attempting to extract SNI (this method is not reliable for all TLS configurations)
-        raw_payload = bytes(packet[TLSClientHello])
-        sni = None
-        sni_match = re.search(b'\x00\x00(.+?)\x00', raw_payload)
-        if sni_match:
-            sni = sni_match.group(1).decode('utf-8', errors='ignore')
-
-        return f"TLS v{tls_version}", sni
-
+        if packet.haslayer(ServerName):
+            serverName = packet[ServerName].servername
+            decoded_serverName = serverName.decode('utf-8')
+        return f"TLS v{tls_version}", decoded_serverName
     return None, None
+
+def get_server_name(raw_payload):
+    # SNI pattern searching (not entirely reliable)
+    # The SNI extension typically starts with 0x00, 0x00 (extension type for server_name)
+    # followed by the length fields and the actual server name.
+    pattern = re.compile(b'\x00\x00..(\x00)..(.*?)$', re.DOTALL)
+    match = pattern.search(raw_payload)
+    if match:
+        server_name_length = match.group(1)
+        if server_name_length:
+            sni_length = int.from_bytes(server_name_length, byteorder='big')
+            server_name = match.group(2)[:sni_length]
+            return server_name.decode('utf-8', errors='ignore')
+    return "SNI not found"
+
+def get_tls_version(raw_payload):
+    # Extract TLS version from the handshake layer
+    if len(raw_payload) > 9:
+        version_bytes = raw_payload[9:11]
+        version_map = {
+            b'\x03\x01': '1.0',
+            b'\x03\x02': '1.1',
+            b'\x03\x03': '1.2',
+            b'\x03\x04': '1.3',
+        }
+        return f"TLS v{version_map.get(version_bytes, 'Unknown')}"
+    return None
+
+
+def is_tls_client_hello(packet):
+    if packet.haslayer(Raw):
+        raw_payload = packet[Raw].load
+        if len(raw_payload) > 5 and raw_payload[0] == 0x16:
+            handshake_type = raw_payload[5]
+            if handshake_type == 0x01:
+                return True
+    return False
+def parse_tls_nonstandard(packet):
+    raw_payload = packet[Raw].load
+    serverName = get_server_name(raw_payload)
+    tls_version = get_tls_version(raw_payload)
+    return tls_version, serverName
+
 
 def packet_callback(packet):
     load_layer("http")
     load_layer("tls")
-    if not packet.haslayer(IP) or not packet.haslayer(TCP):
+    if not packet.haslayer(IP) or not packet.haslayer(TCP) :
         return
 
     timestamp = datetime.fromtimestamp(packet.time).strftime('%Y-%m-%d %H:%M:%S.%f')
@@ -97,17 +142,14 @@ def packet_callback(packet):
     if packet.haslayer(TLSClientHello):
         tls_info, servername = parse_tls(packet)
         print(f"{timestamp} {tls_info} {src_ip}:{src_port} -> {dst_ip}:{dst_port} {servername}")
+    elif packet.haslayer(TCP) and is_tls_client_hello(packet):
+        tls_info, servername = parse_tls_nonstandard(packet)
+        print(f"{timestamp} {tls_info} {src_ip}:{src_port} -> {dst_ip}:{dst_port} {servername}")
     elif packet.haslayer(HTTPRequest):
         http_info = parse_http(packet)
         print(f"{timestamp} HTTP {src_ip}:{src_port} -> {dst_ip}:{dst_port} {http_info}")
     else:
          http_nonstandard(packet)
-
-    # if http_info:
-    #     print(f"{timestamp} HTTP {src_ip}:{src_port} -> {dst_ip}:{dst_port} {http_info}")
-    # elif tls_info and servername:
-    #     print(f"{timestamp} {tls_info} {src_ip}:{src_port} -> {dst_ip}:{dst_port} {servername}")
-
 
 def main():
     parser = argparse.ArgumentParser(description='HTTP/TLS connection monitoring tool')
