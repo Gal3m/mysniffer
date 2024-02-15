@@ -85,9 +85,6 @@ def parse_tls(packet):
     return None, None
 
 def get_server_name(raw_payload):
-    # SNI pattern searching (not entirely reliable)
-    # The SNI extension typically starts with 0x00, 0x00 (extension type for server_name)
-    # followed by the length fields and the actual server name.
     pattern = re.compile(b'\x00\x00..(\x00)..(.*?)$', re.DOTALL)
     match = pattern.search(raw_payload)
     if match:
