@@ -54,9 +54,9 @@ def http_nonstandard(packet):
             formatted_output = (
                 f"{timestamp} HTTP {source_ip}:{source_port} -> "
                 f"{destination_ip}:{destination_port} "
-                f"{host.group(1) if host else 'N/A'} "
-                f"{http_method.group(0) if http_method else 'N/A'} "
-                f"{path.group(2) if path else 'N/A'}"
+                f"{host.group(1) if host else 'None'} "
+                f"{http_method.group(0) if http_method else 'None'} "
+                f"{path.group(2) if path else 'None'}"
             )
             print(formatted_output)
         except Exception as e:
