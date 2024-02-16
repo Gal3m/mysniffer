@@ -204,6 +204,7 @@ def main():
     if args.tracefile:
         sniff(offline=args.tracefile, prn=packet_callback, filter=args.filter, store=0)
     else:
+        print(f"Listening on interface {args.interface}")
         sniff(iface=args.interface, prn=packet_callback, filter=args.filter, store=0)
 
 if __name__ == "__main__":
